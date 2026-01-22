@@ -3,7 +3,7 @@
 //  Laadpalen – Zoekgebieden Editor
 //  /js/script.js  (ArcGIS JS 4.34 ESM)
 // ============================
-
+import * as reactiveUtils from "https://js.arcgis.com/4.34/@arcgis/core/core/reactiveUtils.js";
 import WebMap from "https://js.arcgis.com/4.34/@arcgis/core/WebMap.js";
 import MapView from "https://js.arcgis.com/4.34/@arcgis/core/views/MapView.js";
 import Editor from "https://js.arcgis.com/4.34/@arcgis/core/widgets/Editor.js";
@@ -440,10 +440,41 @@ async function startApp({ reinit = false } = {}) {
       ]
     });
     view.ui.add(editor, "top-right");
-    editor.viewModel.startUpdateWorkflowAtFeatureSelection({
-      layer: laadpaalLayer   // limit selection to Laadpaal
-    });
     editor.visible = true;
+    
+    // Wait for the View, the LayerView, and the Editor to be fully ready and idle,
+    // then enter "select by point" on the Laadpaal layer.
+    (async () => {
+      try {
+        // 1) Wait for view ready and not updating
+        await reactiveUtils.whenOnce(() => view.ready === true);
+        await reactiveUtils.whenOnce(() => view.updating === false);
+    
+        // 2) Wait for the Laadpaal LayerView and let it finish updating
+        const laadpaalLV = await view.whenLayerView(laadpaalLayer);
+        if (laadpaalLV) {
+          await reactiveUtils.whenOnce(() => laadpaalLV.updating === false);
+        }
+    
+        // 3) Wait for the Editor itself
+        await editor.when();
+    
+        // 4) Make sure no existing workflow is active, then start selection
+        if (editor.activeWorkflow) editor.cancelWorkflow();
+    
+        // Use a microtask to avoid colliding with any internal Editor refresh
+        await Promise.resolve();
+    
+        editor.viewModel.startUpdateWorkflowAtFeatureSelection({
+          layer: laadpaalLayer // limits selection to Laadpaal; click=point selection
+        });
+      } catch (e) {
+        console.error("Failed to start selection workflow:", e);
+        // Optional: toast if you have showToast available
+        if (window.showToast) showToast("Kon selectie-modus niet starten.", "error", 3000);
+      }
+    })();
+
     wireEditorPropagationFallback(editor, laadpaalLayer, zoekgebiedLayer);
 
 
