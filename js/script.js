@@ -193,6 +193,68 @@ function hookPropagationOnApplyEdits(laadpaalLayer, zoekgebiedLayer) {
     return [];
   }
 
+  
+  function wireEditorPropagationFallback(editor, laadpaalLayer, zoekgebiedLayer) {
+    const laadpaalFldName   = findFieldName(laadpaalLayer, "laadpaal_geaccepteerd");
+    const zoekgebiedFldName = findFieldName(zoekgebiedLayer, "Laadpaal_geaccepteerd");
+    const laadpaalField     = getField(laadpaalLayer, laadpaalFldName);
+    const zoekgebiedField   = getField(zoekgebiedLayer, zoekgebiedFldName);
+  
+    editor.on("edits", async (evt) => {
+      try {
+        // Collect OIDs the Editor says it updated on Laadpaal
+        const ids = [];
+        (evt?.edits || []).forEach(edit => {
+          if (edit.layer !== laadpaalLayer) return;
+          const res = edit.results || edit.result || {};
+          (res.addFeatureResults || []).forEach(r => { if (r.objectId != null) ids.push(r.objectId); });
+          (res.updateFeatureResults || []).forEach(r => { if (r.objectId != null) ids.push(r.objectId); });
+        });
+        const changedOids = [...new Set(ids)];
+        if (!changedOids.length) return;
+  
+        // Fetch changed features
+        const q = laadpaalLayer.createQuery();
+        q.objectIds = changedOids;
+        q.outFields = ["*"];
+        q.returnGeometry = true;
+        const { features } = await laadpaalLayer.queryFeatures(q);
+        if (!features.length) return;
+  
+        // Propagate (simplified, same logic as the main hook)
+        let totalUpdated = 0;
+        for (const lf of features) {
+          const srcVal = lf.attributes?.[laadpaalFldName];
+          if (srcVal === undefined || srcVal === null) continue;
+  
+          const tgtVal = translateDomainValue(srcVal, laadpaalField, zoekgebiedField);
+  
+          const zq = zoekgebiedLayer.createQuery();
+          zq.geometry = lf.geometry;
+          zq.spatialRelationship = "intersects";
+          zq.outFields = ["*"];
+          zq.returnGeometry = false;
+          const zres = await zoekgebiedLayer.queryFeatures(zq);
+          if (!zres.features.length) continue;
+  
+          const updates = zres.features.map(zf => {
+            const uf = zf.clone();
+            uf.attributes[zoekgebiedFldName] = tgtVal;
+            return uf;
+          });
+          const res = await zoekgebiedLayer.applyEdits({ updateFeatures: updates });
+          totalUpdated += (res.updateFeatureResults || []).filter(r => !r.error).length;
+        }
+        if (totalUpdated > 0) {
+          showToast(`Zoekgebied bijgewerkt: ${totalUpdated} feature(s).`, "success");
+        }
+      } catch (e) {
+        console.error("Editor fallback propagation error:", e);
+        showToast("Fout bij bijwerken van Zoekgebied (fallback).", "error", 4500);
+      }
+    });
+  }
+
   async function propagateFromLaadpaalFeatures(lFeatures) {
     let totalUpdated = 0;
     let hadTargets = false;
@@ -354,6 +416,7 @@ async function startApp({ reinit = false } = {}) {
       ]
     });
     view.ui.add(editor, "top-right");
+    wireEditorPropagationFallback(editor, laadpaalLayer, zoekgebiedLayer);
 
   } catch (err) {
     console.error("WebMap init failed:", err);
