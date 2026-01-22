@@ -5,6 +5,7 @@ import MapView from "https://js.arcgis.com/4.34/@arcgis/core/views/MapView.js";
 import Editor from "https://js.arcgis.com/4.34/@arcgis/core/widgets/Editor.js";
 import OAuthInfo from "https://js.arcgis.com/4.34/@arcgis/core/identity/OAuthInfo.js";
 import IdentityManager from "https://js.arcgis.com/4.34/@arcgis/core/identity/IdentityManager.js";
+import Portal from "https://js.arcgis.com/4.34/@arcgis/core/portal/Portal.js";
 
 // ---------- Toast helpers ----------
 const toastEl  = document.getElementById("toast");
@@ -25,7 +26,6 @@ const oAuthInfo = new OAuthInfo({
   appId: "DDjxKU7PiR0S6kzt",
   portalUrl,
   popup: true,
-  // Fixed for your user site root on GitHub Pages:
   popupCallbackUrl: "https://esrinl-mrh.github.io/oauth-callback.html"
 });
 IdentityManager.registerOAuthInfos([oAuthInfo]);
@@ -42,76 +42,62 @@ function updateAuthUI() {
   if (statusEl)  statusEl.textContent    = authed ? "Signed in" : "Not signed in";
 }
 
-async function signIn() {
+// Start flag & references so we can re-init after login
+let appStarted = false;
+let view = null;
+let webmap = null;
+
+// Centralized initializer – can be called after page load or after login
+async function startApp({ reinit = false } = {}) {
+  if (appStarted && !reinit) return;
+  appStarted = true;
+
   try {
-    // Opens the ArcGIS OAuth popup
-    await IdentityManager.getCredential(`${portalUrl}/sharing`);
-    updateAuthUI();
-    showToast("Ingelogd bij ArcGIS Online.", "success");
-  } catch (e) {
-    console.error("Sign-in canceled or failed", e);
-    showToast("Inloggen geannuleerd of mislukt.", "error");
-  }
-}
+    // If reinitializing, destroy previous view to avoid orphaned state
+    if (reinit && view) {
+      view.destroy();
+      view = null;
+    }
 
-function signOut() {
-  IdentityManager.destroyCredentials();
-  updateAuthUI();
-  showToast("Uitgelogd.", "info", 2000);
-  // Refresh to clear any in-memory session state
-  window.location.reload();
-}
+    // Make the portal context explicit (important for secured items)
+    const portal = new Portal({ url: portalUrl });
+    await portal.load();
 
-// Wire UI events
-if (loginBtn)  loginBtn.addEventListener("click", signIn);
-if (logoutBtn) logoutBtn.addEventListener("click", signOut);
+    webmap = new WebMap({
+      portalItem: {
+        id: "5140997c30f3442d83a178b1d08052d4",
+        portal // explicit portal so tokens are applied correctly
+      }
+    });
 
-// Reflect existing session, if any
-IdentityManager.checkSignInStatus(`${portalUrl}/sharing`)
-  .then(() => showToast("Sessiestatus hersteld.", "info", 1500))
-  .catch(() => {})  // not signed in
-  .finally(updateAuthUI);
+    view = new MapView({
+      map: webmap,
+      container: "viewDiv"
+    });
 
-// ---------- WebMap + View ----------
-const webmap = new WebMap({
-  portalItem: { id: "5140997c30f3442d83a178b1d08052d4" }
-});
+    // Wait for the map to fully load (throws on auth/permission issues)
+    await webmap.loadAll();
 
-const view = new MapView({
-  map: webmap,
-  container: "viewDiv"
-});
+    // Resolve and load target layers
+    const laadpaalLayer =
+      webmap.allLayers.find(l => l.type === "feature" && l.title === "Laadpaal")
+      || webmap.allLayers.find(l => l.type === "feature" && l.layerId === 0);
 
-// Helper to find the two layers, robust to title or service layerId
-async function getLayers() {
-  await webmap.loadAll();
+    const zoekgebiedLayer =
+      webmap.allLayers.find(l => l.type === "feature" && l.title === "Zoekgebied")
+      || webmap.allLayers.find(l => l.type === "feature" && l.layerId === 1);
 
-  const laadpaalLayer =
-    webmap.allLayers.find(l => l.type === "feature" && l.title === "Laadpaal")
-    || webmap.allLayers.find(l => l.type === "feature" && l.layerId === 0);
+    if (!laadpaalLayer) throw new Error("Layer not found: 'Laadpaal' (layerId 0)");
+    if (!zoekgebiedLayer) throw new Error("Layer not found: 'Zoekgebied' (layerId 1)");
 
-  const zoekgebiedLayer =
-    webmap.allLayers.find(l => l.type === "feature" && l.title === "Zoekgebied")
-    || webmap.allLayers.find(l => l.type === "feature" && l.layerId === 1);
+    await Promise.all([laadpaalLayer.load(), zoekgebiedLayer.load()]);
 
-  if (!laadpaalLayer) throw new Error("Layer not found: 'Laadpaal' (layerId 0)");
-  if (!zoekgebiedLayer) throw new Error("Layer not found: 'Zoekgebied' (layerId 1)");
-
-  await Promise.all([laadpaalLayer.load(), zoekgebiedLayer.load()]);
-  return { laadpaalLayer, zoekgebiedLayer };
-}
-
-// ---------- Initialize Editor ----------
-let layers;
-view.when(async () => {
-  try {
-    layers = await getLayers();
-
+    // Editor
     const editor = new Editor({
       view,
       allowedWorkflows: ["create", "update"],
       layerInfos: [{
-        layer: layers.laadpaalLayer,
+        layer: laadpaalLayer,
         addEnabled: true,
         updateEnabled: true,
         deleteEnabled: false,
@@ -121,26 +107,31 @@ view.when(async () => {
               type: "field",
               fieldName: "laadpaal_geaccepteerd",
               label: "Laadpaal geaccepteerd"
-              // The service's coded value domain renders a dropdown automatically.
             }
           ]
         }
       }]
     });
-
     view.ui.add(editor, "top-right");
 
-    // Cross-layer sync: Laadpaal -> Zoekgebied
-    wireCrossLayerUpdate(layers.laadpaalLayer, layers.zoekgebiedLayer);
+    // Wire cross-layer updates
+    wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer);
+
   } catch (err) {
-    console.error(err);
-    showToast("Fout bij laden van lagen of editor.", "error", 4000);
+    console.error("WebMap init failed:", err);
+    // Helpful diagnostics for common cases
+    if (String(err).includes("permission") || String(err).includes("403")) {
+      showToast("Geen toegang tot webmap of sublaag(‑en). Controleer shares/rollen.", "error", 5000);
+    } else if (String(err).toLowerCase().includes("token") || String(err).includes("identity")) {
+      showToast("Authenticatie vereist. Probeer opnieuw in te loggen.", "error", 5000);
+    } else {
+      showToast("Fout bij laden van de webmap. Zie console voor details.", "error", 5000);
+    }
   }
-});
+}
 
 // ---------- Cross-layer update logic ----------
 function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
-  // Fires after applyEdits completes on this layer (adds/updates/deletes)
   laadpaalLayer.on("edits", async (evt) => {
     try {
       const addIds     = (evt.edits?.addFeatureResults ?? []).map(r => r.objectId).filter(Boolean);
@@ -148,7 +139,6 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
       const changedIds = [...new Set([...addIds, ...updateIds])];
       if (!changedIds.length) return;
 
-      // Fetch changed Laadpaal features
       const q = laadpaalLayer.createQuery();
       q.objectIds = changedIds;
       q.outFields = ["*"];
@@ -162,7 +152,6 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
         const newVal = f.attributes?.["laadpaal_geaccepteerd"];
         if (newVal === undefined || newVal === null) continue;
 
-        // Find intersecting Zoekgebied features
         const zq = zoekgebiedLayer.createQuery();
         zq.geometry = f.geometry;
         zq.spatialRelationship = "intersects";
@@ -172,7 +161,6 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
 
         if (zres.features.length) hadTargets = true;
 
-        // Update Zoekgebied.Laadpaal_geaccepteerd = newVal
         const toUpdate = zres.features.map(zf => {
           const uf = zf.clone();
           uf.attributes["Laadpaal_geaccepteerd"] = newVal;
@@ -189,7 +177,7 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
       if (totalUpdated > 0) {
         showToast(`Zoekgebied bijgewerkt: ${totalUpdated} feature(s).`, "success");
       } else if (!hadTargets) {
-        showToast("Geen overlappende Zoekgebied-features gevonden.", "info", 2500);
+        showToast("Geen overlappende Zoekgebied‑features gevonden.", "info", 2500);
       }
     } catch (err) {
       console.error("Cross-layer update failed:", err);
@@ -197,3 +185,36 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
     }
   });
 }
+
+// ---------- Sign-in flow ----------
+async function signIn() {
+  try {
+    await IdentityManager.getCredential(`${portalUrl}/sharing`);
+    updateAuthUI();
+    showToast("Ingelogd bij ArcGIS Online.", "success");
+    // (Re)start the app after obtaining a credential
+    await startApp({ reinit: true });
+  } catch (e) {
+    console.error("Sign-in canceled or failed", e);
+    showToast("Inloggen geannuleerd of mislukt.", "error");
+  }
+}
+function signOut() {
+  IdentityManager.destroyCredentials();
+  updateAuthUI();
+  showToast("Uitgelogd.", "info", 2000);
+  // Fresh start on logout
+  window.location.reload();
+}
+
+// Wire UI events
+if (loginBtn)  loginBtn.addEventListener("click", signIn);
+if (logoutBtn) logoutBtn.addEventListener("click", signOut);
+
+// 1) Resolve sign-in state first, then start the app
+IdentityManager.checkSignInStatus(`${portalUrl}/sharing`)
+  .catch(() => {}) // not signed in
+  .finally(() => {
+    updateAuthUI();
+    startApp(); // start once status is known
+  });
