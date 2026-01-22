@@ -89,8 +89,37 @@ function translateDomainValue(value, srcField, tgtField) {
   return tgtEntry ? tgtEntry.code : value;
 }
 
+
+// ---------- OID collectors from different events ----------
+function collectOidsFromLayerEditsEvent(evt) {
+  const ids = [];
+  const e = evt?.edits ?? {};
+  for (const key of ["addFeatureResults", "updateFeatureResults"]) {
+    (e[key] || []).forEach((r) => {
+      if (r?.objectId != null) ids.push(r.objectId);
+    });
+  }
+  return [...new Set(ids)];
+}
+
+function collectOidsFromEditorEditsEvent(evt, targetLayer) {
+  const ids = [];
+  (evt?.edits || []).forEach((edit) => {
+    if (edit?.layer !== targetLayer) return;
+    const res = edit.results || edit.result || {};
+    for (const key of ["addFeatureResults", "updateFeatureResults"]) {
+      (res[key] || []).forEach((r) => {
+        if (r?.objectId != null) ids.push(r.objectId);
+      });
+    }
+  });
+  return [...new Set(ids)];
+}
+
+
 // ---- Safe/bypass applyEdits for Zoekgebied ----
 // Capture original applyEdits early so later "blockers" don't affect internal updates
+/*
 function getZoekgebiedApplyEdits(zoekgebiedLayer) {
   if (!zoekgebiedLayer.__origApplyEdits) {
     zoekgebiedLayer.__origApplyEdits = zoekgebiedLayer.applyEdits.bind(zoekgebiedLayer);
@@ -100,7 +129,7 @@ function getZoekgebiedApplyEdits(zoekgebiedLayer) {
     return zoekgebiedLayer.__origApplyEdits(edits);
   };
 }
-
+*/
 
 // Centralized initializer – can be called after page load or after login
 async function startApp({ reinit = false } = {}) {
