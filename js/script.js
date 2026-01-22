@@ -47,6 +47,61 @@ let appStarted = false;
 let view = null;
 let webmap = null;
 
+
+// ---- Field & domain helpers ----
+function findFieldName(layer, desiredName) {
+  // Find actual field name by case-insensitive match; fallback to desiredName
+  const f = layer.fields?.find(
+    (fld) => fld.name?.toLowerCase() === desiredName.toLowerCase()
+  );
+  return f?.name || desiredName;
+}
+
+function getField(layer, fieldName) {
+  const actual = findFieldName(layer, fieldName);
+  return layer.fields?.find((f) => f.name === actual);
+}
+
+/**
+ * Translate a value from source field's domain to target field's domain.
+ * If domains match or no domains, returns the original value.
+ * Strategy:
+ *  - If value matches a source domain CODE, find its NAME, then find target CODE by NAME (case-insensitive).
+ *  - If value matches a source domain NAME, map to target CODE by NAME (case-insensitive).
+ */
+function translateDomainValue(value, srcField, tgtField) {
+  const srcDom = srcField?.domain?.codedValues;
+  const tgtDom = tgtField?.domain?.codedValues;
+  if (!srcDom || !tgtDom) return value;
+
+  const v = value;
+  // Find a source entry by code OR name
+  let srcEntry =
+    srcDom.find((cv) => cv.code === v) ||
+    srcDom.find((cv) => String(cv.name).toLowerCase() === String(v).toLowerCase());
+  if (!srcEntry) return value;
+
+  // In the target domain, match by NAME
+  const tgtEntry = tgtDom.find(
+    (cv) => String(cv.name).toLowerCase() === String(srcEntry.name).toLowerCase()
+  );
+  // If found, return the target CODE; else keep original
+  return tgtEntry ? tgtEntry.code : value;
+}
+
+// ---- Safe/bypass applyEdits for Zoekgebied ----
+// Capture original applyEdits early so later "blockers" don't affect internal updates
+function getZoekgebiedApplyEdits(zoekgebiedLayer) {
+  if (!zoekgebiedLayer.__origApplyEdits) {
+    zoekgebiedLayer.__origApplyEdits = zoekgebiedLayer.applyEdits.bind(zoekgebiedLayer);
+  }
+  return async (edits) => {
+    // If someone installed a blocking override later, call the original directly.
+    return zoekgebiedLayer.__origApplyEdits(edits);
+  };
+}
+
+
 // Centralized initializer – can be called after page load or after login
 async function startApp({ reinit = false } = {}) {
   if (appStarted && !reinit) return;
@@ -113,8 +168,8 @@ async function startApp({ reinit = false } = {}) {
           actions: []               // ⛔ no actions at all
         };
 
-// Also ensure default popup actions are not auto-added
-zoekgebiedLayer.defaultPopupTemplateEnabled = false;
+    // Also ensure default popup actions are not auto-added
+    zoekgebiedLayer.defaultPopupTemplateEnabled = false;
 
     
     // Editor
@@ -168,14 +223,26 @@ zoekgebiedLayer.defaultPopupTemplateEnabled = false;
 }
 
 // ---------- Cross-layer update logic ----------
+
 function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
+  // Resolve actual field names on both layers
+  const laadpaalFldName = findFieldName(laadpaalLayer, "laadpaal_geaccepteerd");
+  const zoekgebiedFldName = findFieldName(zoekgebiedLayer, "Laadpaal_geaccepteerd");
+
+  const laadpaalField = getField(laadpaalLayer, laadpaalFldName);
+  const zoekgebiedField = getField(zoekgebiedLayer, zoekgebiedFldName);
+
+  // Safe internal updater for Zoekgebied (bypasses any later "block edits" overrides)
+  const zqApplyEdits = getZoekgebiedApplyEdits(zoekgebiedLayer);
+
   laadpaalLayer.on("edits", async (evt) => {
     try {
-      const addIds     = (evt.edits?.addFeatureResults ?? []).map(r => r.objectId).filter(Boolean);
-      const updateIds  = (evt.edits?.updateFeatureResults ?? []).map(r => r.objectId).filter(Boolean);
+      const addIds     = (evt.edits?.addFeatureResults ?? []).map((r) => r.objectId).filter(Boolean);
+      const updateIds  = (evt.edits?.updateFeatureResults ?? []).map((r) => r.objectId).filter(Boolean);
       const changedIds = [...new Set([...addIds, ...updateIds])];
       if (!changedIds.length) return;
 
+      // Read changed Laadpaal features with geometry and fields
       const q = laadpaalLayer.createQuery();
       q.objectIds = changedIds;
       q.outFields = ["*"];
@@ -185,29 +252,49 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
       let totalUpdated = 0;
       let hadTargets = false;
 
-      for (const f of features) {
-        const newVal = f.attributes?.["laadpaal_geaccepteerd"];
-        if (newVal === undefined || newVal === null) continue;
+      for (const lf of features) {
+        // Read value from Laadpaal (code or name)
+        const srcVal = lf.attributes?.[laadpaalFldName];
+        if (srcVal === undefined || srcVal === null) continue;
 
+        // Translate to target domain code if needed
+        const tgtVal = translateDomainValue(srcVal, laadpaalField, zoekgebiedField);
+
+        // Find intersecting Zoekgebied features
         const zq = zoekgebiedLayer.createQuery();
-        zq.geometry = f.geometry;
+        zq.geometry = lf.geometry;
         zq.spatialRelationship = "intersects";
         zq.outFields = ["*"];
         zq.returnGeometry = false;
         const zres = await zoekgebiedLayer.queryFeatures(zq);
 
-        if (zres.features.length) hadTargets = true;
+        if (!zres.features.length) continue;
+        hadTargets = true;
 
-        const toUpdate = zres.features.map(zf => {
+        // Build updates
+        const toUpdate = zres.features.map((zf) => {
           const uf = zf.clone();
-          uf.attributes["Laadpaal_geaccepteerd"] = newVal;
+          uf.attributes[zoekgebiedFldName] = tgtVal;
           return uf;
         });
 
-        if (toUpdate.length) {
-          const res = await zoekgebiedLayer.applyEdits({ updateFeatures: toUpdate });
-          const updatedCount = (res.updateFeatureResults || []).filter(r => !r.error).length;
-          totalUpdated += updatedCount;
+        // Apply with safe/bypass path
+        const res = await zqApplyEdits({ updateFeatures: toUpdate });
+
+        // Count successes / surface first error
+        const results = res.updateFeatureResults || [];
+        const ok = results.filter((r) => !r.error).length;
+        totalUpdated += ok;
+
+        const firstErr = results.find((r) => r.error)?.error;
+        if (firstErr) {
+          console.error("Zoekgebied update error:", firstErr);
+          // Domain mismatch produces code 1000 / 400-like messages
+          showToast(
+            `Fout bij bijwerken van Zoekgebied: ${firstErr.message || "onbekende fout"}`,
+            "error",
+            4500
+          );
         }
       }
 
@@ -218,10 +305,11 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
       }
     } catch (err) {
       console.error("Cross-layer update failed:", err);
-      showToast("Fout bij bijwerken van Zoekgebied.", "error", 4000);
+      showToast("Fout bij bijwerken van Zoekgebied (details in console).", "error", 4500);
     }
   });
 }
+
 
 // ---------- Sign-in flow ----------
 async function signIn() {
