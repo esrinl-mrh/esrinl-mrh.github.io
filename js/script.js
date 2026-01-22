@@ -92,7 +92,30 @@ async function startApp({ reinit = false } = {}) {
 
     await Promise.all([laadpaalLayer.load(), zoekgebiedLayer.load()]);
     
-    zoekgebiedLayer.editingEnabled = false;
+    
+    const existingZqTemplate = zoekgebiedLayer.popupTemplate;
+    
+    zoekgebiedLayer.popupEnabled = true; // view-only allowed
+    zoekgebiedLayer.popupTemplate = existingZqTemplate
+      ? {
+          // keep title/content if present
+          title: existingZqTemplate.title,
+          content: existingZqTemplate.content,
+          expressionInfos: existingZqTemplate.expressionInfos,
+          fieldInfos: existingZqTemplate.fieldInfos,
+          outFields: existingZqTemplate.outFields,
+          // ⛔ remove all actions so "Edit" etc. cannot appear
+          actions: []
+        }
+      : {
+          title: "{NAME}",          // adjust if you have a relevant field
+          content: "{*}",           // show attributes read-only
+          actions: []               // ⛔ no actions at all
+        };
+
+// Also ensure default popup actions are not auto-added
+zoekgebiedLayer.defaultPopupTemplateEnabled = false;
+
     
     // Editor
 
