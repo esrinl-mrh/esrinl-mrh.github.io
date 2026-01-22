@@ -17,7 +17,7 @@ require([
   const info = new OAuthInfo({
     appId: "DDjxKU7PiR0S6kzt",                         // <-- replace if needed
     portalUrl: "https://esrinederland.maps.arcgis.com", // <-- replace (e.g. https://www.arcgis.com)
-    popup: true                                        // use popup for sign-in
+    popup: true   // use popup for sign-in
   });
 
   esriId.registerOAuthInfos([info]);
