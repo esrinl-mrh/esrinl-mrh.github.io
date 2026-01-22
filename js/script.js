@@ -18,14 +18,28 @@ const toastEl  = document.getElementById("toast");
 const toastMsg = document.getElementById("toast-msg");
 let toastTimer = null;
 
-function showToast(message, type = "info", ms = 3000) {
-  if (!toastEl || !toastMsg) return;
-  toastEl.className = "toast";
-  toastEl.classList.add(`toast--${type}`, "show");
-  toastMsg.textContent = message;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.classList.remove("show"), ms);
+
+function showToast(message, type = "info", timeout = 3000) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+
+  const toast = document.createElement("div");
+  toast.className = `toast toast--${type}`;
+  toast.textContent = message;
+
+  container.appendChild(toast);
+
+  // Trigger animation
+  void toast.offsetWidth;
+  toast.classList.add("show");
+
+  // Auto‑hide
+  setTimeout(() => {
+    toast.classList.add("hide");
+    setTimeout(() => toast.remove(), 300);
+  }, timeout);
 }
+
 
 // -----------------------------------------------------
 // Field & domain helpers
