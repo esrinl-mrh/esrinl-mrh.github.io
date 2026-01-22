@@ -114,6 +114,10 @@ async function startApp({ reinit = false } = {}) {
               }
             ]
           }
+        },
+        {
+          layer: zoekgebiedLayer,
+          enabled: false
         }
       ],
       // Ensure the Editor does not auto-pull other map layers
