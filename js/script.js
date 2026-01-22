@@ -441,6 +441,11 @@ async function startApp({ reinit = false } = {}) {
     });
     view.ui.add(editor, "top-right");
     wireEditorPropagationFallback(editor, laadpaalLayer, zoekgebiedLayer);
+    editor.viewModel.startUpdateWorkflowAtFeatureSelection({
+      layer: laadpaalLayer   // limit selection to Laadpaal
+    });
+    editor.visible = true;
+
 
   } catch (err) {
     console.error("WebMap init failed:", err);
