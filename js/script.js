@@ -6,17 +6,27 @@ import Editor from "https://js.arcgis.com/4.34/@arcgis/core/widgets/Editor.js";
 import OAuthInfo from "https://js.arcgis.com/4.34/@arcgis/core/identity/OAuthInfo.js";
 import IdentityManager from "https://js.arcgis.com/4.34/@arcgis/core/identity/IdentityManager.js";
 
+// ---------- Toast helpers ----------
+const toastEl  = document.getElementById("toast");
+const toastMsg = document.getElementById("toast-msg");
+let toastTimer;
+function showToast(message, type = "info", ms = 3000) {
+  if (!toastEl || !toastMsg) return;
+  toastEl.className = "toast";
+  toastEl.classList.add(`toast--${type}`, "show");
+  toastMsg.textContent = message;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), ms);
+}
+
 // ---------- OAuth 2.0 (ArcGIS Online) ----------
 const portalUrl = "https://www.arcgis.com";
 const oAuthInfo = new OAuthInfo({
-  // Your ArcGIS Online registered application
   appId: "DDjxKU7PiR0S6kzt",
   portalUrl,
   popup: true,
-  // Recommended for popup mode on static hosts (GitHub Pages):
-  // Provide a lightweight callback page and add it as a Redirect URI.
-  // See 'oauth-callback.html' at the end of this reply.
-  popupCallbackUrl: `${window.location.origin}/oauth-callback.html`
+  // Fixed for your user site root on GitHub Pages:
+  popupCallbackUrl: "https://esrinl-mrh.github.io/oauth-callback.html"
 });
 IdentityManager.registerOAuthInfos([oAuthInfo]);
 
@@ -25,33 +35,16 @@ const loginBtn  = document.getElementById("loginBtn");
 const logoutBtn = document.getElementById("logoutBtn");
 const statusEl  = document.getElementById("status");
 
-// Toast helpers
-const toastEl   = document.getElementById("toast");
-const toastMsg  = document.getElementById("toast-msg");
-let toastTimer;
-
-function showToast(message, type = "info", ms = 3000) {
-  // Reset classes
-  toastEl.className = "toast";
-  toastEl.classList.add(`toast--${type}`, "show");
-  toastMsg.textContent = message;
-
-  // Clear existing timers
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toastEl.classList.remove("show");
-  }, ms);
-}
-
 function updateAuthUI() {
   const authed = IdentityManager.credentials?.length > 0;
-  loginBtn.style.display = authed ? "none" : "inline-block";
-  logoutBtn.style.display = authed ? "inline-block" : "none";
-  statusEl.textContent = authed ? "Signed in" : "Not signed in";
+  if (loginBtn)  loginBtn.style.display  = authed ? "none" : "inline-block";
+  if (logoutBtn) logoutBtn.style.display = authed ? "inline-block" : "none";
+  if (statusEl)  statusEl.textContent    = authed ? "Signed in" : "Not signed in";
 }
 
 async function signIn() {
   try {
+    // Opens the ArcGIS OAuth popup
     await IdentityManager.getCredential(`${portalUrl}/sharing`);
     updateAuthUI();
     showToast("Ingelogd bij ArcGIS Online.", "success");
@@ -60,22 +53,23 @@ async function signIn() {
     showToast("Inloggen geannuleerd of mislukt.", "error");
   }
 }
+
 function signOut() {
   IdentityManager.destroyCredentials();
   updateAuthUI();
   showToast("Uitgelogd.", "info", 2000);
-  // Optional: refresh the app state
+  // Refresh to clear any in-memory session state
   window.location.reload();
 }
 
 // Wire UI events
-loginBtn.addEventListener("click", signIn);
-logoutBtn.addEventListener("click", signOut);
+if (loginBtn)  loginBtn.addEventListener("click", signIn);
+if (logoutBtn) logoutBtn.addEventListener("click", signOut);
 
 // Reflect existing session, if any
 IdentityManager.checkSignInStatus(`${portalUrl}/sharing`)
   .then(() => showToast("Sessiestatus hersteld.", "info", 1500))
-  .catch(() => {})  // not signed in, ignore
+  .catch(() => {})  // not signed in
   .finally(updateAuthUI);
 
 // ---------- WebMap + View ----------
@@ -127,7 +121,7 @@ view.when(async () => {
               type: "field",
               fieldName: "laadpaal_geaccepteerd",
               label: "Laadpaal geaccepteerd"
-              // Coded value domain on the service renders dropdown automatically.
+              // The service's coded value domain renders a dropdown automatically.
             }
           ]
         }
@@ -178,3 +172,28 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
 
         if (zres.features.length) hadTargets = true;
 
+        // Update Zoekgebied.Laadpaal_geaccepteerd = newVal
+        const toUpdate = zres.features.map(zf => {
+          const uf = zf.clone();
+          uf.attributes["Laadpaal_geaccepteerd"] = newVal;
+          return uf;
+        });
+
+        if (toUpdate.length) {
+          const res = await zoekgebiedLayer.applyEdits({ updateFeatures: toUpdate });
+          const updatedCount = (res.updateFeatureResults || []).filter(r => !r.error).length;
+          totalUpdated += updatedCount;
+        }
+      }
+
+      if (totalUpdated > 0) {
+        showToast(`Zoekgebied bijgewerkt: ${totalUpdated} feature(s).`, "success");
+      } else if (!hadTargets) {
+        showToast("Geen overlappende Zoekgebied-features gevonden.", "info", 2500);
+      }
+    } catch (err) {
+      console.error("Cross-layer update failed:", err);
+      showToast("Fout bij bijwerken van Zoekgebied.", "error", 4000);
+    }
+  });
+}
