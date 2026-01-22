@@ -227,7 +227,7 @@ async function startApp({ reinit = false } = {}) {
 function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
   // Resolve actual field names on both layers
   const laadpaalFldName = findFieldName(laadpaalLayer, "laadpaal_geaccepteerd");
-  const zoekgebiedFldName = findFieldName(zoekgebiedLayer, "Laadpaal_geaccepteerd");
+  const zoekgebiedFldName = findFieldName(zoekgebiedLayer, "laadpaal_geaccepteerd");
 
   const laadpaalField = getField(laadpaalLayer, laadpaalFldName);
   const zoekgebiedField = getField(zoekgebiedLayer, zoekgebiedFldName);
