@@ -91,7 +91,9 @@ async function startApp({ reinit = false } = {}) {
     if (!zoekgebiedLayer) throw new Error("Layer not found: 'Zoekgebied' (layerId 1)");
 
     await Promise.all([laadpaalLayer.load(), zoekgebiedLayer.load()]);
-
+    
+    zoekgebiedLayer.editingEnabled = false;
+    
     // Editor
     const editor = new Editor({
       view,
@@ -100,7 +102,7 @@ async function startApp({ reinit = false } = {}) {
         layer: laadpaalLayer,
         addEnabled: true,
         updateEnabled: true,
-        deleteEnabled: false,
+        deleteEnabled: true,
         formTemplate: {
           elements: [
             {
