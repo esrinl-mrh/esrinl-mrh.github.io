@@ -419,7 +419,7 @@ async function startApp({ reinit = false } = {}) {
           enabled: true,
           addEnabled: true,
           updateEnabled: true,
-          deleteEnabled: false,
+          deleteEnabled: true,
           formTemplate: {
             elements: [
               {
