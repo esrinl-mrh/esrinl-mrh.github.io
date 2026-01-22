@@ -1,32 +1,12 @@
-<!DOCTYPE HTML>
+
+<!doctype html>
 <html>
-<head>
-  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-  <title>OAuth Popup Callback</title>
-  
-  <style>
-    html, body {
-      height: 100%; 
-      width: 100%;
-      margin: 0px;
-      padding: 0px;
-      font-family: Lucida Sans,Lucida Grande,Arial !important;
-      font-size: 14px;
-    }
-  </style>
-
+<body>
+  Redirecting...
   <script>
-    function initialize() {
-      //console.log("oauth callback");
-      
-      //window.opener.OAuthHelper.checkOAuthResponse(window.location.href);
-      window.opener.oAuthHelper.checkOAuthResponse(window.location.href);
-      window.close();
-    }
+    // ArcGIS PKCE hands the OAuth code to IdentityManager,
+    // then your callback should simply return to the main app.
+    window.location.replace(window.location.origin + "/index.html");
   </script>
-</head>
-
-<body onload="initialize();">
-  <!--OAuth Popup Callback-->
 </body>
 </html>
