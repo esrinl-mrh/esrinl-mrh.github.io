@@ -13,7 +13,8 @@
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
-  <div id="viewDiv"></div>
+  <!-- Map container: the WebMap + Editor are injected here by js/script.js -->
+  <div id="viewDiv" aria-label="Map view"></div>
 
   <!-- Simple login/logout bar -->
   <div class="topbar">
@@ -26,6 +27,8 @@
   <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true">
     <span id="toast-msg"></span>
   </div>
+
+  <noscript>This app requires JavaScript to run.</noscript>
 
   <!-- App logic (ESM) -->
   <script type="module" src="js/script.js"></script>
