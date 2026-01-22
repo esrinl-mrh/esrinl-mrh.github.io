@@ -12,8 +12,9 @@ const oAuthInfo = new OAuthInfo({
   // Your ArcGIS Online registered application
   appId: "DDjxKU7PiR0S6kzt",
   portalUrl,
-  popup: true // full-page redirect back to the current URL
-  // With popup:false, the SDK uses the current page URL as the redirect target.
+  popup: true,              // use popup for sign-in (what you expect)
+  // Optional but recommended for popup mode on GitHub Pages:
+  // popupCallbackUrl: window.location.origin + "/oauth-callback.html"
 });
 IdentityManager.registerOAuthInfos([oAuthInfo]);
 
@@ -30,22 +31,29 @@ function updateAuthUI() {
 
 async function signIn() {
   try {
+    // This will open the OAuth popup
     await IdentityManager.getCredential(`${portalUrl}/sharing`);
     updateAuthUI();
   } catch (e) {
     console.error("Sign-in canceled or failed", e);
   }
 }
+
 function signOut() {
   IdentityManager.destroyCredentials();
   updateAuthUI();
-  // Reload to clear any in-memory state associated with auth
+  // Optional: refresh the app state
   window.location.reload();
 }
 
+// Wire UI events
 loginBtn.addEventListener("click", signIn);
 logoutBtn.addEventListener("click", signOut);
-updateAuthUI();
+
+// If the page loads with a valid session (e.g., after a previous login), reflect it.
+IdentityManager.checkSignInStatus(`${portalUrl}/sharing`)
+  .catch(() => {})  // not signed in, ignore
+  .finally(updateAuthUI);
 
 // ---------- WebMap + View ----------
 const webmap = new WebMap({
@@ -61,7 +69,6 @@ const view = new MapView({
 async function getLayers() {
   await webmap.loadAll();
 
-  // Try by exact title first, then by service layerId
   const laadpaalLayer =
     webmap.allLayers.find(l => l.type === "feature" && l.title === "Laadpaal")
     || webmap.allLayers.find(l => l.type === "feature" && l.layerId === 0);
@@ -82,7 +89,6 @@ let layers;
 view.when(async () => {
   layers = await getLayers();
 
-  // Editor on top-right, only for Laadpaal layer
   const editor = new Editor({
     view,
     allowedWorkflows: ["create", "update"],
@@ -97,8 +103,7 @@ view.when(async () => {
             type: "field",
             fieldName: "laadpaal_geaccepteerd",
             label: "Laadpaal geaccepteerd"
-            // If the field has a coded value domain on the service,
-            // the Editor renders a dropdown: "Ja", "Nee", "Nog te beoordelen".
+            // Coded value domain on the service renders dropdown automatically.
           }
         ]
       }
@@ -107,7 +112,7 @@ view.when(async () => {
 
   view.ui.add(editor, "top-right");
 
-  // Listen to edits on Laadpaal and propagate to Zoekgebied
+  // Cross-layer sync: Laadpaal -> Zoekgebied
   wireCrossLayerUpdate(layers.laadpaalLayer, layers.zoekgebiedLayer);
 });
 
@@ -121,7 +126,7 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
       const changedIds = [...new Set([...addIds, ...updateIds])];
       if (!changedIds.length) return;
 
-      // Fetch the changed Laadpaal features to read latest attributes + geometry
+      // Fetch changed Laadpaal features
       const q = laadpaalLayer.createQuery();
       q.objectIds = changedIds;
       q.outFields = ["*"];
@@ -141,7 +146,7 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
         const zres = await zoekgebiedLayer.queryFeatures(zq);
         if (!zres.features.length) continue;
 
-        // Prepare updates: set Zoekgebied.Laadpaal_geaccepteerd = newVal
+        // Update Zoekgebied.Laadpaal_geaccepteerd = newVal
         const toUpdate = zres.features.map(zf => {
           const uf = zf.clone();
           uf.attributes["Laadpaal_geaccepteerd"] = newVal;
