@@ -12,15 +12,36 @@ const oAuthInfo = new OAuthInfo({
   // Your ArcGIS Online registered application
   appId: "DDjxKU7PiR0S6kzt",
   portalUrl,
-  popup: true,              // use popup for sign-in (what you expect)
-  // Optional but recommended for popup mode on GitHub Pages:
-  // popupCallbackUrl: window.location.origin + "/oauth-callback.html"
+  popup: true,
+  // Recommended for popup mode on static hosts (GitHub Pages):
+  // Provide a lightweight callback page and add it as a Redirect URI.
+  // See 'oauth-callback.html' at the end of this reply.
+  popupCallbackUrl: `${window.location.origin}/oauth-callback.html`
 });
 IdentityManager.registerOAuthInfos([oAuthInfo]);
 
+// UI elements
 const loginBtn  = document.getElementById("loginBtn");
 const logoutBtn = document.getElementById("logoutBtn");
 const statusEl  = document.getElementById("status");
+
+// Toast helpers
+const toastEl   = document.getElementById("toast");
+const toastMsg  = document.getElementById("toast-msg");
+let toastTimer;
+
+function showToast(message, type = "info", ms = 3000) {
+  // Reset classes
+  toastEl.className = "toast";
+  toastEl.classList.add(`toast--${type}`, "show");
+  toastMsg.textContent = message;
+
+  // Clear existing timers
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.classList.remove("show");
+  }, ms);
+}
 
 function updateAuthUI() {
   const authed = IdentityManager.credentials?.length > 0;
@@ -31,17 +52,18 @@ function updateAuthUI() {
 
 async function signIn() {
   try {
-    // This will open the OAuth popup
     await IdentityManager.getCredential(`${portalUrl}/sharing`);
     updateAuthUI();
+    showToast("Ingelogd bij ArcGIS Online.", "success");
   } catch (e) {
     console.error("Sign-in canceled or failed", e);
+    showToast("Inloggen geannuleerd of mislukt.", "error");
   }
 }
-
 function signOut() {
   IdentityManager.destroyCredentials();
   updateAuthUI();
+  showToast("Uitgelogd.", "info", 2000);
   // Optional: refresh the app state
   window.location.reload();
 }
@@ -50,8 +72,9 @@ function signOut() {
 loginBtn.addEventListener("click", signIn);
 logoutBtn.addEventListener("click", signOut);
 
-// If the page loads with a valid session (e.g., after a previous login), reflect it.
+// Reflect existing session, if any
 IdentityManager.checkSignInStatus(`${portalUrl}/sharing`)
+  .then(() => showToast("Sessiestatus hersteld.", "info", 1500))
   .catch(() => {})  // not signed in, ignore
   .finally(updateAuthUI);
 
@@ -87,33 +110,38 @@ async function getLayers() {
 // ---------- Initialize Editor ----------
 let layers;
 view.when(async () => {
-  layers = await getLayers();
+  try {
+    layers = await getLayers();
 
-  const editor = new Editor({
-    view,
-    allowedWorkflows: ["create", "update"],
-    layerInfos: [{
-      layer: layers.laadpaalLayer,
-      addEnabled: true,
-      updateEnabled: true,
-      deleteEnabled: false,
-      formTemplate: {
-        elements: [
-          {
-            type: "field",
-            fieldName: "laadpaal_geaccepteerd",
-            label: "Laadpaal geaccepteerd"
-            // Coded value domain on the service renders dropdown automatically.
-          }
-        ]
-      }
-    }]
-  });
+    const editor = new Editor({
+      view,
+      allowedWorkflows: ["create", "update"],
+      layerInfos: [{
+        layer: layers.laadpaalLayer,
+        addEnabled: true,
+        updateEnabled: true,
+        deleteEnabled: false,
+        formTemplate: {
+          elements: [
+            {
+              type: "field",
+              fieldName: "laadpaal_geaccepteerd",
+              label: "Laadpaal geaccepteerd"
+              // Coded value domain on the service renders dropdown automatically.
+            }
+          ]
+        }
+      }]
+    });
 
-  view.ui.add(editor, "top-right");
+    view.ui.add(editor, "top-right");
 
-  // Cross-layer sync: Laadpaal -> Zoekgebied
-  wireCrossLayerUpdate(layers.laadpaalLayer, layers.zoekgebiedLayer);
+    // Cross-layer sync: Laadpaal -> Zoekgebied
+    wireCrossLayerUpdate(layers.laadpaalLayer, layers.zoekgebiedLayer);
+  } catch (err) {
+    console.error(err);
+    showToast("Fout bij laden van lagen of editor.", "error", 4000);
+  }
 });
 
 // ---------- Cross-layer update logic ----------
@@ -133,6 +161,9 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
       q.returnGeometry = true;
       const { features } = await laadpaalLayer.queryFeatures(q);
 
+      let totalUpdated = 0;
+      let hadTargets = false;
+
       for (const f of features) {
         const newVal = f.attributes?.["laadpaal_geaccepteerd"];
         if (newVal === undefined || newVal === null) continue;
@@ -144,22 +175,6 @@ function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
         zq.outFields = ["*"];
         zq.returnGeometry = false;
         const zres = await zoekgebiedLayer.queryFeatures(zq);
-        if (!zres.features.length) continue;
 
-        // Update Zoekgebied.Laadpaal_geaccepteerd = newVal
-        const toUpdate = zres.features.map(zf => {
-          const uf = zf.clone();
-          uf.attributes["Laadpaal_geaccepteerd"] = newVal;
-          return uf;
-        });
+        if (zres.features.length) hadTargets = true;
 
-        if (toUpdate.length) {
-          await zoekgebiedLayer.applyEdits({ updateFeatures: toUpdate });
-          console.info(`Updated ${toUpdate.length} Zoekgebied feature(s) to '${newVal}'.`);
-        }
-      }
-    } catch (err) {
-      console.error("Cross-layer update failed:", err);
-    }
-  });
-}
