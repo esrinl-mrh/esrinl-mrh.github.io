@@ -1,167 +1,160 @@
 
-/* ArcGIS JS 4.34 OAuth2 Example (static)
-   Notes:
-   - Keep your appId and portalUrl in sync with your ArcGIS OAuth app.
-   - Ensure your GitHub Pages URL is registered as a Redirect URI in the app.
-*/
+// ArcGIS Maps SDK for JavaScript 4.34 (ESM imports)
+import WebMap from "https://js.arcgis.com/4.34/@arcgis/core/WebMap.js";
+import MapView from "https://js.arcgis.com/4.34/@arcgis/core/views/MapView.js";
+import Editor from "https://js.arcgis.com/4.34/@arcgis/core/widgets/Editor.js";
+import OAuthInfo from "https://js.arcgis.com/4.34/@arcgis/core/identity/OAuthInfo.js";
+import IdentityManager from "https://js.arcgis.com/4.34/@arcgis/core/identity/IdentityManager.js";
 
-require([
-  "esri/identity/OAuthInfo",
-  "esri/identity/IdentityManager",
-  "esri/WebMap",
-  "esri/views/MapView",
-  "esri/portal/Portal"
-], function (OAuthInfo, esriId, WebMap, MapView, Portal) {
+// ---------- OAuth 2.0 (ArcGIS Online) ----------
+const portalUrl = "https://www.arcgis.com";
+const oAuthInfo = new OAuthInfo({
+  // Your ArcGIS Online registered application
+  appId: "DDjxKU7PiR0S6kzt",
+  portalUrl,
+  popup: false // full-page redirect back to the current URL
+  // With popup:false, the SDK uses the current page URL as the redirect target.
+});
+IdentityManager.registerOAuthInfos([oAuthInfo]);
 
-  // 1) Configure OAuth
-  const info = new OAuthInfo({
-    appId: "DDjxKU7PiR0S6kzt",                         // <-- replace if needed
-    portalUrl: "https://esrinederland.maps.arcgis.com", // <-- replace (e.g. https://www.arcgis.com)
-    popup: true   // use popup for sign-in
-  });
+const loginBtn  = document.getElementById("loginBtn");
+const logoutBtn = document.getElementById("logoutBtn");
+const statusEl  = document.getElementById("status");
 
-  esriId.registerOAuthInfos([info]);
+function updateAuthUI() {
+  const authed = IdentityManager.credentials?.length > 0;
+  loginBtn.style.display = authed ? "none" : "inline-block";
+  logoutBtn.style.display = authed ? "inline-block" : "none";
+  statusEl.textContent = authed ? "Signed in" : "Not signed in";
+}
 
-  // 2) Check existing sign-in (optional but common)
-  esriId.checkSignInStatus(info.portalUrl + "/sharing")
-    .then(function () {
-      console.log("User already signed in");
-      initApp();
-    })
-    .catch(function () {
-      console.log("User not signed in yet, will prompt on first secure request");
-      initApp();
-    });
+async function signIn() {
+  try {
+    await IdentityManager.getCredential(`${portalUrl}/sharing`);
+    updateAuthUI();
+  } catch (e) {
+    console.error("Sign-in canceled or failed", e);
+  }
+}
+function signOut() {
+  IdentityManager.destroyCredentials();
+  updateAuthUI();
+  // Reload to clear any in-memory state associated with auth
+  window.location.reload();
+}
 
-  async function initApp() {
-    try {
-      // 3) Create webmap + view
-      const webmap = new WebMap({
-        portalItem: { id: "5140997c30f3442d83a178b1d08052d4" } // <-- replace if needed
-      });
+loginBtn.addEventListener("click", signIn);
+logoutBtn.addEventListener("click", signOut);
+updateAuthUI();
 
-      const view = new MapView({
-        container: "viewDiv",
-        map: webmap
-      });
+// ---------- WebMap + View ----------
+const webmap = new WebMap({
+  portalItem: { id: "5140997c30f3442d83a178b1d08052d4" }
+});
 
-      const userStatusEl = document.getElementById("userStatus");
-      const signOutBtn   = document.getElementById("signOutBtn");
+const view = new MapView({
+  map: webmap,
+  container: "viewDiv"
+});
 
-      // 4) Load portal to show user info if available
-      const portal = new Portal({ url: info.portalUrl });
+// Helper to find the two layers, robust to title or service layerId
+async function getLayers() {
+  await webmap.loadAll();
 
-      portal.load().then(function () {
-        const creds = esriId.findCredential(info.portalUrl);
-        if (creds && portal.user) {
-          userStatusEl.textContent = "Signed in as: " + portal.user.username;
-          signOutBtn.style.display = "inline-block";
-        } else {
-          userStatusEl.textContent = "Not signed in (will prompt if needed)";
-        }
-      });
+  // Try by exact title first, then by service layerId
+  const laadpaalLayer =
+    webmap.allLayers.find(l => l.type === "feature" && l.title === "Laadpaal")
+    || webmap.allLayers.find(l => l.type === "feature" && l.layerId === 0);
 
-      // 5) Sign-out
-      signOutBtn.addEventListener("click", function () {
-        esriId.destroyCredentials();
-        window.location.reload();
-      });
+  const zoekgebiedLayer =
+    webmap.allLayers.find(l => l.type === "feature" && l.title === "Zoekgebied")
+    || webmap.allLayers.find(l => l.type === "feature" && l.layerId === 1);
 
-      // 6) Optional: log credential events & errors
-      esriId.on("credential-create", function (event) {
-        console.log("Credential created:", event.credential);
-      });
-      esriId.on("error", function (error) {
-        console.error("IdentityManager error:", error);
-      });
+  if (!laadpaalLayer) throw new Error("Layer not found: 'Laadpaal' (layerId 0)");
+  if (!zoekgebiedLayer) throw new Error("Layer not found: 'Zoekgebied' (layerId 1)");
 
-      // ---------------------------
-      // Editor (web component) setup
-      // ---------------------------
+  await Promise.all([laadpaalLayer.load(), zoekgebiedLayer.load()]);
+  return { laadpaalLayer, zoekgebiedLayer };
+}
 
-      // (A) verify the component is defined
-      if (!customElements.get("arcgis-editor")) {
-        console.warn(
-          "The <arcgis-editor> custom element is not defined. " +
-          "Did you include <script type=\"module\" src=\"https://js.arcgis.com/4.34/map-components\"></script> in index.html?"
-        );
-      }
+// ---------- Initialize Editor ----------
+let layers;
+view.when(async () => {
+  layers = await getLayers();
 
-      // (B) get the component from the DOM
-      const editorEl = document.getElementById("editor");
-      if (!editorEl) {
-        console.warn("No element with id='editor' found. Add <arcgis-editor id=\"editor\"></arcgis-editor> to the HTML body.");
-        return;
-      }
-
-      // (C) bind the MapView once it's ready
-      await view.when();
-      editorEl.view = view;
-
-      // (D) load all layers before configuring Editor
-      await webmap.loadAll();
-
-      // (E) find the 'laadpalen' FeatureLayer (title or id contains 'laadpalen')
-      const laadpalen = webmap.allLayers.find((lyr) =>
-        lyr.type === "feature" &&
-        (
-          (lyr.title && lyr.title.toLowerCase().includes("laadpalen")) ||
-          (lyr.id && lyr.id.toLowerCase().includes("laadpalen"))
-        )
-      );
-
-      if (!laadpalen) {
-        console.warn("Could not find a FeatureLayer named 'laadpalen' in the WebMap.");
-        console.info("Layers present:", webmap.allLayers.map(l => ({ title: l.title, id: l.id, type: l.type })));
-        return;
-      }
-
-      // (F) enable popups for better UX (select → update form)
-      try { laadpalen.popupEnabled = true; } catch (_) {}
-
-      // (G) construct a minimal form with just the one field
-      const formTemplate = {
+  // Editor on top-right, only for Laadpaal layer
+  const editor = new Editor({
+    view,
+    allowedWorkflows: ["create", "update"],
+    layerInfos: [{
+      layer: layers.laadpaalLayer,
+      addEnabled: true,
+      updateEnabled: true,
+      deleteEnabled: false,
+      formTemplate: {
         elements: [
           {
             type: "field",
             fieldName: "laadpaal_geaccepteerd",
             label: "Laadpaal geaccepteerd"
+            // If the field has a coded value domain on the service,
+            // the Editor renders a dropdown: "Ja", "Nee", "Nog te beoordelen".
           }
         ]
-      };
-
-      // (H) optional: set point drawing tool & default value through layer template
-      try {
-        await laadpalen.load();
-        if (laadpalen.templates && laadpalen.templates.length) {
-          const t = laadpalen.templates[0];
-          t.drawingTool = "esriFeatureEditToolPoint"; // ensure point creation
-          // Optionally prefill a default (uncomment and set the value you expect):
-          // t.prototype = Object.assign({}, t.prototype, { laadpaal_geaccepteerd: true });
-        }
-      } catch (e) {
-        console.warn("Could not load layer templates; continuing without default value.", e);
       }
+    }]
+  });
 
-      // (I) enable create + update (no delete). Limit visible workflows.
-      editorEl.layerInfos = [
-        {
-          layer: laadpalen,
-          formTemplate,
-          addEnabled: true,       // allow creating new laadpalen points
-          updateEnabled: true,    // allow editing existing laadpalen
-          deleteEnabled: false
-        }
-      ];
-      editorEl.allowedWorkflows = ["create", "update"];
+  view.ui.add(editor, "top-right");
 
-      // (J) optional: enable snapping for precise placement
-      try { view.map.snappingEnabled = true; } catch (_) {}
-
-      console.log("Editor wired: create+update enabled on 'laadpalen', field: laadpaal_geaccepteerd");
-
-    } catch (err) {
-      console.error("initApp error:", err);
-    }
-  }
+  // Listen to edits on Laadpaal and propagate to Zoekgebied
+  wireCrossLayerUpdate(layers.laadpaalLayer, layers.zoekgebiedLayer);
 });
+
+// ---------- Cross-layer update logic ----------
+function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
+  // Fires after applyEdits completes on this layer (adds/updates/deletes)
+  laadpaalLayer.on("edits", async (evt) => {
+    try {
+      const addIds     = (evt.edits?.addFeatureResults ?? []).map(r => r.objectId).filter(Boolean);
+      const updateIds  = (evt.edits?.updateFeatureResults ?? []).map(r => r.objectId).filter(Boolean);
+      const changedIds = [...new Set([...addIds, ...updateIds])];
+      if (!changedIds.length) return;
+
+      // Fetch the changed Laadpaal features to read latest attributes + geometry
+      const q = laadpaalLayer.createQuery();
+      q.objectIds = changedIds;
+      q.outFields = ["*"];
+      q.returnGeometry = true;
+      const { features } = await laadpaalLayer.queryFeatures(q);
+
+      for (const f of features) {
+        const newVal = f.attributes?.["laadpaal_geaccepteerd"];
+        if (newVal === undefined || newVal === null) continue;
+
+        // Find intersecting Zoekgebied features
+        const zq = zoekgebiedLayer.createQuery();
+        zq.geometry = f.geometry;
+        zq.spatialRelationship = "intersects";
+        zq.outFields = ["*"];
+        zq.returnGeometry = false;
+        const zres = await zoekgebiedLayer.queryFeatures(zq);
+        if (!zres.features.length) continue;
+
+        // Prepare updates: set Zoekgebied.Laadpaal_geaccepteerd = newVal
+        const toUpdate = zres.features.map(zf => {
+          const uf = zf.clone();
+          uf.attributes["Laadpaal_geaccepteerd"] = newVal;
+          return uf;
+        });
+
+        if (toUpdate.length) {
+          await zoekgebiedLayer.applyEdits({ updateFeatures: toUpdate });
+          console.info(`Updated ${toUpdate.length} Zoekgebied feature(s) to '${newVal}'.`);
+        }
+      }
+    } catch (err) {
+      console.error("Cross-layer update failed:", err);
+    }
+  });
+}
