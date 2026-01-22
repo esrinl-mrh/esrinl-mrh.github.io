@@ -253,91 +253,95 @@ async function startApp({ reinit = false } = {}) {
 
 // ---------- Cross-layer update logic ----------
 
-function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer) {
-  // Resolve actual field names on both layers
-  const laadpaalFldName = findFieldName(laadpaalLayer, "laadpaal_geaccepteerd");
-  const zoekgebiedFldName = findFieldName(zoekgebiedLayer, "laadpaal_geaccepteerd");
 
-  const laadpaalField = getField(laadpaalLayer, laadpaalFldName);
-  const zoekgebiedField = getField(zoekgebiedLayer, zoekgebiedFldName);
+function wireCrossLayerUpdate(laadpaalLayer, zoekgebiedLayer, editor) {
+  // Resolve actual field names + field schemas
+  const laadpaalFldName   = findFieldName(laadpaalLayer, "laadpaal_geaccepteerd");
+  const zoekgebiedFldName = findFieldName(zoekgebiedLayer, "Laadpaal_geaccepteerd");
+  const laadpaalField     = getField(laadpaalLayer, laadpaalFldName);
+  const zoekgebiedField   = getField(zoekgebiedLayer, zoekgebiedFldName);
 
-  // Safe internal updater for Zoekgebied (bypasses any later "block edits" overrides)
-  const zqApplyEdits = getZoekgebiedApplyEdits(zoekgebiedLayer);
+  async function processChangedLaadpalen(changedOids) {
+    if (!changedOids?.length) {
+      console.debug("No changed OIDs provided; skipping propagation.");
+      return;
+    }
 
-  laadpaalLayer.on("edits", async (evt) => {
-    try {
-      const addIds     = (evt.edits?.addFeatureResults ?? []).map((r) => r.objectId).filter(Boolean);
-      const updateIds  = (evt.edits?.updateFeatureResults ?? []).map((r) => r.objectId).filter(Boolean);
-      const changedIds = [...new Set([...addIds, ...updateIds])];
-      if (!changedIds.length) return;
+    // Fetch changed Laadpaal features
+    const q = laadpaalLayer.createQuery();
+    q.objectIds = changedOids;
+    q.outFields = ["*"];
+    q.returnGeometry = true;
 
-      // Read changed Laadpaal features with geometry and fields
-      const q = laadpaalLayer.createQuery();
-      q.objectIds = changedIds;
-      q.outFields = ["*"];
-      q.returnGeometry = true;
-      const { features } = await laadpaalLayer.queryFeatures(q);
+    const { features } = await laadpaalLayer.queryFeatures(q);
+    if (!features.length) return;
 
-      let totalUpdated = 0;
-      let hadTargets = false;
+    let totalUpdated = 0;
+    let hadTargets   = false;
 
-      for (const lf of features) {
-        // Read value from Laadpaal (code or name)
-        const srcVal = lf.attributes?.[laadpaalFldName];
-        if (srcVal === undefined || srcVal === null) continue;
+    for (const lf of features) {
+      const srcVal = lf.attributes?.[laadpaalFldName];
+      if (srcVal === undefined || srcVal === null) continue;
 
-        // Translate to target domain code if needed
-        const tgtVal = translateDomainValue(srcVal, laadpaalField, zoekgebiedField);
+      const tgtVal = translateDomainValue(srcVal, laadpaalField, zoekgebiedField);
 
-        // Find intersecting Zoekgebied features
-        const zq = zoekgebiedLayer.createQuery();
-        zq.geometry = lf.geometry;
-        zq.spatialRelationship = "intersects";
-        zq.outFields = ["*"];
-        zq.returnGeometry = false;
-        const zres = await zoekgebiedLayer.queryFeatures(zq);
+      // Intersections in Zoekgebied
+      const zq = zoekgebiedLayer.createQuery();
+      zq.geometry = lf.geometry;
+      zq.spatialRelationship = "intersects";
+      zq.outFields = ["*"];
+      zq.returnGeometry = false;
 
-        if (!zres.features.length) continue;
-        hadTargets = true;
+      const zres = await zoekgebiedLayer.queryFeatures(zq);
+      if (!zres.features.length) continue;
+      hadTargets = true;
 
-        // Build updates
-        const toUpdate = zres.features.map((zf) => {
-          const uf = zf.clone();
-          uf.attributes[zoekgebiedFldName] = tgtVal;
-          return uf;
-        });
+      const toUpdate = zres.features.map((zf) => {
+        const uf = zf.clone();
+        uf.attributes[zoekgebiedFldName] = tgtVal;
+        return uf;
+      });
 
-        // Apply with safe/bypass path
-        const res = await zqApplyEdits({ updateFeatures: toUpdate });
+      const res = await zoekgebiedLayer.applyEdits({ updateFeatures: toUpdate });
+      const ok  = (res.updateFeatureResults || []).filter((r) => !r.error).length;
+      totalUpdated += ok;
 
-        // Count successes / surface first error
-        const results = res.updateFeatureResults || [];
-        const ok = results.filter((r) => !r.error).length;
-        totalUpdated += ok;
-
-        const firstErr = results.find((r) => r.error)?.error;
-        if (firstErr) {
-          console.error("Zoekgebied update error:", firstErr);
-          // Domain mismatch produces code 1000 / 400-like messages
-          showToast(
-            `Fout bij bijwerken van Zoekgebied: ${firstErr.message || "onbekende fout"}`,
-            "error",
-            4500
-          );
-        }
+      const firstErr = (res.updateFeatureResults || []).find((r) => r.error)?.error;
+      if (firstErr) {
+        console.error("Zoekgebied update error:", firstErr);
+        // Domain/permission issues surface here
+        showToast(
+          `Fout bij bijwerken van Zoekgebied: ${firstErr.message || "onbekende fout"}`,
+          "error",
+          4500
+        );
       }
+    }
 
-      if (totalUpdated > 0) {
-        showToast(`Zoekgebied bijgewerkt: ${totalUpdated} feature(s).`, "success");
-      } else if (!hadTargets) {
-        showToast("Geen overlappende Zoekgebied‑features gevonden.", "info", 2500);
-      }
-    } catch (err) {
-      console.error("Cross-layer update failed:", err);
-      showToast("Fout bij bijwerken van Zoekgebied (details in console).", "error", 4500);
+    if (totalUpdated > 0) {
+      showToast(`Zoekgebied bijgewerkt: ${totalUpdated} feature(s).`, "success");
+    } else if (!hadTargets) {
+      showToast("Geen overlappende Zoekgebied‑features gevonden.", "info", 2500);
+    }
+  }
+
+  // 1) FeatureLayer "edits" (fires when this client calls applyEdits on that layer)
+  laadpaalLayer.on("edits", (evt) => {
+    const ids = collectOidsFromLayerEditsEvent(evt);
+    console.debug("[Laadpaal] Layer edits event → OIDs:", ids);
+    processChangedLaadpalen(ids).catch((e) => console.error("Propagation error:", e));
+  });
+
+  // 2) Editor "edits" (fires when the Editor applies edits—covers batch cases)
+  editor.on("edits", (evt) => {
+    const ids = collectOidsFromEditorEditsEvent(evt, laadpaalLayer);
+    if (ids.length) {
+      console.debug("[Laadpaal] Editor edits event → OIDs:", ids);
+      processChangedLaadpalen(ids).catch((e) => console.error("Propagation error:", e));
     }
   });
 }
+
 
 
 // ---------- Sign-in flow ----------
