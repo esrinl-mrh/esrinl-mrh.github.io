@@ -77,5 +77,75 @@ require([
     esriId.on("error", function (error) {
       console.error("IdentityManager error:", error);
     });
+
+    // -----------------------------
+    // 7) Editor web component setup
+    // -----------------------------
+    // Requires: <script src="https://js.arcgis.com/4.34/map-components"></script>
+    // And in HTML body: <arcgis-editor id="editor" position="top-right"></arcgis-editor>
+    const editorEl = document.getElementById("editor");
+    // Bind the Editor component to the MapView
+    editorEl.view = view;
+
+    view.when(async () => {
+      // Ensure all layers are ready
+      await webmap.loadAll();
+
+      // Find the 'laadpalen' FeatureLayer by title or id
+      const laadpalen = webmap.allLayers.find((lyr) =>
+        lyr.type === "feature" &&
+        ((lyr.title && lyr.title.toLowerCase().includes("laadpalen")) ||
+         (lyr.id && lyr.id.toLowerCase().includes("laadpalen")))
+      );
+
+      if (!laadpalen) {
+        console.warn("Could not find a FeatureLayer named 'laadpalen' in the WebMap.");
+        return;
+      }
+
+      // Enable popups for a smoother edit experience (select → update form)
+      try { laadpalen.popupEnabled = true; } catch (_) {}
+
+      // Minimal form: only laadpaal_geaccepteerd
+      const formTemplate = {
+        elements: [
+          {
+            type: "field",
+            fieldName: "laadpaal_geaccepteerd",
+            label: "Laadpaal geaccepteerd"
+            // If boolean or coded value domain, the Editor renders a switch/dropdown automatically
+          }
+        ]
+      };
+
+      // Optional: ensure point creation tool and (optionally) a default value
+      try {
+        await laadpalen.load();
+        if (laadpalen.templates && laadpalen.templates.length) {
+          const t = laadpalen.templates[0];
+          t.drawingTool = "esriFeatureEditToolPoint"; // ensure point geometry tool
+          // Set a default if your schema expects it (uncomment and set value you want):
+          // t.prototype = Object.assign({}, t.prototype, { laadpaal_geaccepteerd: true });
+        }
+      } catch (e) {
+        console.warn("Could not load layer templates; continuing without default value.", e);
+      }
+
+      // Enable CREATE + UPDATE (no delete). Also limit visible workflows in the UI.
+      editorEl.layerInfos = [
+        {
+          layer: laadpalen,
+          formTemplate,
+          addEnabled: true,       // ✅ allow creating new laadpalen points
+          updateEnabled: true,    // ✅ allow editing existing features
+          deleteEnabled: false
+        }
+      ];
+
+      editorEl.allowedWorkflows = ["create", "update"];
+
+      // Optional: snapping for precise placement (if supported)
+      try { view.map.snappingEnabled = true; } catch (_) {}
+    });
   }
 });
