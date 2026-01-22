@@ -70,12 +70,7 @@ html, body, #viewDiv {
 }
 
 /* Variants */
-.toast--success {
-  border-left: 4px solid #2e7d32;
-}
-.toast--error {
-  border-left: 4px solid #c62828;
-}
-.toast--info {
-  border-left: 4px solid #1565c0;
-}
+.toast--success { border-left: 4px solid #2e7d32; }
+.toast--error   { border-left: 4px solid #c62828; }
+.toast--info    { border-left: 4px solid #1565c0; }
+``
