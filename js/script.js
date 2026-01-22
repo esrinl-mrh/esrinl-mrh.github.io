@@ -33,119 +33,135 @@ require([
       initApp();
     });
 
-  function initApp() {
-    // 3) Create a (secured) webmap
-    const webmap = new WebMap({
-      portalItem: {
-        id: "5140997c30f3442d83a178b1d08052d4"  // <-- replace with your (possibly secured) webmap id
+  async function initApp() {
+    try {
+      // 3) Create webmap + view
+      const webmap = new WebMap({
+        portalItem: { id: "5140997c30f3442d83a178b1d08052d4" } // <-- replace if needed
+      });
+
+      const view = new MapView({
+        container: "viewDiv",
+        map: webmap
+      });
+
+      const userStatusEl = document.getElementById("userStatus");
+      const signOutBtn   = document.getElementById("signOutBtn");
+
+      // 4) Load portal to show user info if available
+      const portal = new Portal({ url: info.portalUrl });
+
+      portal.load().then(function () {
+        const creds = esriId.findCredential(info.portalUrl);
+        if (creds && portal.user) {
+          userStatusEl.textContent = "Signed in as: " + portal.user.username;
+          signOutBtn.style.display = "inline-block";
+        } else {
+          userStatusEl.textContent = "Not signed in (will prompt if needed)";
+        }
+      });
+
+      // 5) Sign-out
+      signOutBtn.addEventListener("click", function () {
+        esriId.destroyCredentials();
+        window.location.reload();
+      });
+
+      // 6) Optional: log credential events & errors
+      esriId.on("credential-create", function (event) {
+        console.log("Credential created:", event.credential);
+      });
+      esriId.on("error", function (error) {
+        console.error("IdentityManager error:", error);
+      });
+
+      // ---------------------------
+      // Editor (web component) setup
+      // ---------------------------
+
+      // (A) verify the component is defined
+      if (!customElements.get("arcgis-editor")) {
+        console.warn(
+          "The <arcgis-editor> custom element is not defined. " +
+          "Did you include <script type=\"module\" src=\"https://js.arcgis.com/4.34/map-components\"></script> in index.html?"
+        );
       }
-    });
 
-    const view = new MapView({
-      container: "viewDiv",
-      map: webmap
-    });
-
-    const userStatusEl = document.getElementById("userStatus");
-    const signOutBtn = document.getElementById("signOutBtn");
-
-    // 4) Load portal to show user info if available
-    const portal = new Portal({ url: info.portalUrl });
-
-    portal.load().then(function () {
-      const creds = esriId.findCredential(info.portalUrl);
-      if (creds && portal.user) {
-        userStatusEl.textContent = "Signed in as: " + portal.user.username;
-        signOutBtn.style.display = "inline-block";
-      } else {
-        userStatusEl.textContent = "Not signed in (will prompt if needed)";
+      // (B) get the component from the DOM
+      const editorEl = document.getElementById("editor");
+      if (!editorEl) {
+        console.warn("No element with id='editor' found. Add <arcgis-editor id=\"editor\"></arcgis-editor> to the HTML body.");
+        return;
       }
-    });
 
-    // 5) Sign-out
-    signOutBtn.addEventListener("click", function () {
-      esriId.destroyCredentials();
-      // Reload to clear state
-      window.location.reload();
-    });
+      // (C) bind the MapView once it's ready
+      await view.when();
+      editorEl.view = view;
 
-    // 6) Optional: log credential events & errors
-    esriId.on("credential-create", function (event) {
-      console.log("Credential created:", event.credential);
-    });
-
-    esriId.on("error", function (error) {
-      console.error("IdentityManager error:", error);
-    });
-
-    // -----------------------------
-    // 7) Editor web component setup
-    // -----------------------------
-    // Requires: <script src="https://js.arcgis.com/4.34/map-components"></script>
-    // And in HTML body: <arcgis-editor id="editor" position="top-right"></arcgis-editor>
-    const editorEl = document.getElementById("editor");
-    // Bind the Editor component to the MapView
-    editorEl.view = view;
-
-    view.when(async () => {
-      // Ensure all layers are ready
+      // (D) load all layers before configuring Editor
       await webmap.loadAll();
 
-      // Find the 'laadpalen' FeatureLayer by title or id
+      // (E) find the 'laadpalen' FeatureLayer (title or id contains 'laadpalen')
       const laadpalen = webmap.allLayers.find((lyr) =>
         lyr.type === "feature" &&
-        ((lyr.title && lyr.title.toLowerCase().includes("laadpalen")) ||
-         (lyr.id && lyr.id.toLowerCase().includes("laadpalen")))
+        (
+          (lyr.title && lyr.title.toLowerCase().includes("laadpalen")) ||
+          (lyr.id && lyr.id.toLowerCase().includes("laadpalen"))
+        )
       );
 
       if (!laadpalen) {
         console.warn("Could not find a FeatureLayer named 'laadpalen' in the WebMap.");
+        console.info("Layers present:", webmap.allLayers.map(l => ({ title: l.title, id: l.id, type: l.type })));
         return;
       }
 
-      // Enable popups for a smoother edit experience (select → update form)
+      // (F) enable popups for better UX (select → update form)
       try { laadpalen.popupEnabled = true; } catch (_) {}
 
-      // Minimal form: only laadpaal_geaccepteerd
+      // (G) construct a minimal form with just the one field
       const formTemplate = {
         elements: [
           {
             type: "field",
             fieldName: "laadpaal_geaccepteerd",
             label: "Laadpaal geaccepteerd"
-            // If boolean or coded value domain, the Editor renders a switch/dropdown automatically
           }
         ]
       };
 
-      // Optional: ensure point creation tool and (optionally) a default value
+      // (H) optional: set point drawing tool & default value through layer template
       try {
         await laadpalen.load();
         if (laadpalen.templates && laadpalen.templates.length) {
           const t = laadpalen.templates[0];
-          t.drawingTool = "esriFeatureEditToolPoint"; // ensure point geometry tool
-          // Set a default if your schema expects it (uncomment and set value you want):
+          t.drawingTool = "esriFeatureEditToolPoint"; // ensure point creation
+          // Optionally prefill a default (uncomment and set the value you expect):
           // t.prototype = Object.assign({}, t.prototype, { laadpaal_geaccepteerd: true });
         }
       } catch (e) {
         console.warn("Could not load layer templates; continuing without default value.", e);
       }
 
-      // Enable CREATE + UPDATE (no delete). Also limit visible workflows in the UI.
+      // (I) enable create + update (no delete). Limit visible workflows.
       editorEl.layerInfos = [
         {
           layer: laadpalen,
           formTemplate,
-          addEnabled: true,       // ✅ allow creating new laadpalen points
-          updateEnabled: true,    // ✅ allow editing existing features
+          addEnabled: true,       // allow creating new laadpalen points
+          updateEnabled: true,    // allow editing existing laadpalen
           deleteEnabled: false
         }
       ];
-
       editorEl.allowedWorkflows = ["create", "update"];
 
-      // Optional: snapping for precise placement (if supported)
+      // (J) optional: enable snapping for precise placement
       try { view.map.snappingEnabled = true; } catch (_) {}
-    });
+
+      console.log("Editor wired: create+update enabled on 'laadpalen', field: laadpaal_geaccepteerd");
+
+    } catch (err) {
+      console.error("initApp error:", err);
+    }
   }
 });
