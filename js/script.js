@@ -95,25 +95,33 @@ async function startApp({ reinit = false } = {}) {
     zoekgebiedLayer.editingEnabled = false;
     
     // Editor
+
     const editor = new Editor({
       view,
       allowedWorkflows: ["create", "update"],
-      layerInfos: [{
-        layer: laadpaalLayer,
-        addEnabled: true,
-        updateEnabled: true,
-        deleteEnabled: true,
-        formTemplate: {
-          elements: [
-            {
-              type: "field",
-              fieldName: "laadpaal_geaccepteerd",
-              label: "Laadpaal geaccepteerd"
-            }
-          ]
+      layerInfos: [
+        {
+          layer: laadpaalLayer,
+          addEnabled: true,
+          updateEnabled: true,
+          deleteEnabled: false,
+          formTemplate: {
+            elements: [
+              {
+                type: "field",
+                fieldName: "laadpaal_geaccepteerd",
+                label: "Laadpaal geaccepteerd"
+              }
+            ]
+          }
         }
-      }]
+      ],
+      // Ensure the Editor does not auto-pull other map layers
+      supportingWidgetDefaults: {
+        featureForm: { groupDisplay: "sequential" }
+      }
     });
+
     view.ui.add(editor, "top-right");
 
     // Wire cross-layer updates
