@@ -12,7 +12,7 @@ const oAuthInfo = new OAuthInfo({
   // Your ArcGIS Online registered application
   appId: "DDjxKU7PiR0S6kzt",
   portalUrl,
-  popup: false // full-page redirect back to the current URL
+  popup: true // full-page redirect back to the current URL
   // With popup:false, the SDK uses the current page URL as the redirect target.
 });
 IdentityManager.registerOAuthInfos([oAuthInfo]);
