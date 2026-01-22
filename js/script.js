@@ -19,9 +19,15 @@ const toastMsg = document.getElementById("toast-msg");
 let toastTimer = null;
 
 
+
+// ---- Toast helper (stacking) ----
 function showToast(message, type = "info", timeout = 3000) {
   const container = document.getElementById("toast-container");
-  if (!container) return;
+  if (!container) {
+    // Optional: fallback to console if container missing
+    console.warn("toast-container not found; message:", message);
+    return;
+  }
 
   const toast = document.createElement("div");
   toast.className = `toast toast--${type}`;
@@ -29,16 +35,19 @@ function showToast(message, type = "info", timeout = 3000) {
 
   container.appendChild(toast);
 
-  // Trigger animation
+  // Trigger CSS transition
   void toast.offsetWidth;
   toast.classList.add("show");
 
-  // Auto‑hide
+  // Auto-hide with fade-out
   setTimeout(() => {
     toast.classList.add("hide");
     setTimeout(() => toast.remove(), 300);
   }, timeout);
 }
+
+// Optional: expose for console testing (ESM scope is module-scoped by default)
+window.showToast = showToast;
 
 
 // -----------------------------------------------------
