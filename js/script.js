@@ -121,8 +121,14 @@ let webmap = null;
  * Hook propagation right after Laadpaal.applyEdits completes successfully.
  * Works regardless of which UI triggered the edit (Editor, popup, custom code).
  */
+
+/**
+ * Hook propagation right after Laadpaal.applyEdits completes successfully.
+ * More robust: derives changed features from both the edits param and the result,
+ * and falls back to GlobalID when ObjectID isn't returned.
+ */
 function hookPropagationOnApplyEdits(laadpaalLayer, zoekgebiedLayer) {
-  if (laadpaalLayer.__propHookInstalled) return; // avoid double-wrapping
+  if (laadpaalLayer.__propHookInstalled) return; // avoid double-wrap
 
   // Resolve field names & schemas once
   const laadpaalFldName   = findFieldName(laadpaalLayer, "laadpaal_geaccepteerd");
@@ -130,24 +136,68 @@ function hookPropagationOnApplyEdits(laadpaalLayer, zoekgebiedLayer) {
   const laadpaalField     = getField(laadpaalLayer, laadpaalFldName);
   const zoekgebiedField   = getField(zoekgebiedLayer, zoekgebiedFldName);
 
+  const objectIdField  = laadpaalLayer.objectIdField || "OBJECTID";
+  const globalIdField  = laadpaalLayer.globalIdField || "GlobalID";
+
   // Keep original
   const origApplyEdits = laadpaalLayer.applyEdits.bind(laadpaalLayer);
 
-  const propagateFromOids = async (objectIds) => {
-    if (!objectIds?.length) return;
+  // Extract OIDs/GUIDs from the 'edits' argument (before sending to server)
+  function collectIdsFromEdits(edits) {
+    const oids = new Set();
+    const gids = new Set();
 
-    // Fetch edited Laadpaal features (geom + attrs)
-    const q = laadpaalLayer.createQuery();
-    q.objectIds = objectIds;
-    q.outFields = ["*"];
-    q.returnGeometry = true;
-    const { features } = await laadpaalLayer.queryFeatures(q);
-    if (!features.length) return;
+    const grab = (features = []) => {
+      features.forEach(f => {
+        const attrs = f?.attributes || {};
+        if (attrs[objectIdField] != null) oids.add(attrs[objectIdField]);
+        if (attrs[globalIdField]) gids.add(attrs[globalIdField]);
+      });
+    };
+    if (edits?.addFeatures) grab(edits.addFeatures);
+    if (edits?.updateFeatures) grab(edits.updateFeatures);
+    // deletes are irrelevant for propagation
+    return { oids: [...oids], gids: [...gids] };
+  }
 
+  // Extract OIDs from the server result
+  function collectOidsFromResult(res) {
+    const ids = [];
+    (res?.addFeatureResults || []).forEach(r => { if (r.objectId != null) ids.push(r.objectId); });
+    (res?.updateFeatureResults || []).forEach(r => { if (r.objectId != null) ids.push(r.objectId); });
+    return [...new Set(ids)];
+  }
+
+  // Query Laadpaal by OIDs OR (if needed) by GlobalIDs
+  async function fetchChangedLaadpaal(oids, gids) {
+    // Try OIDs first
+    if (oids?.length) {
+      const q = laadpaalLayer.createQuery();
+      q.objectIds = oids;
+      q.outFields = ["*"];
+      q.returnGeometry = true;
+      const r = await laadpaalLayer.queryFeatures(q);
+      if (r.features?.length) return r.features;
+    }
+    // Fallback by GlobalIDs
+    if (gids?.length && globalIdField) {
+      const esc = gids.map(g => `'${g}'`).join(",");
+      const where = `${globalIdField} IN (${esc})`;
+      const q = laadpaalLayer.createQuery();
+      q.where = where;
+      q.outFields = ["*"];
+      q.returnGeometry = true;
+      const r = await laadpaalLayer.queryFeatures(q);
+      return r.features || [];
+    }
+    return [];
+  }
+
+  async function propagateFromLaadpaalFeatures(lFeatures) {
     let totalUpdated = 0;
-    let hadTargets   = false;
+    let hadTargets = false;
 
-    for (const lf of features) {
+    for (const lf of lFeatures) {
       const srcVal = lf.attributes?.[laadpaalFldName];
       if (srcVal === undefined || srcVal === null) continue;
 
@@ -165,47 +215,52 @@ function hookPropagationOnApplyEdits(laadpaalLayer, zoekgebiedLayer) {
       hadTargets = true;
 
       // Build updates
-      const updates = zres.features.map((zf) => {
+      const updates = zres.features.map(zf => {
         const uf = zf.clone();
         uf.attributes[zoekgebiedFldName] = tgtVal;
         return uf;
       });
 
       const res = await zoekgebiedLayer.applyEdits({ updateFeatures: updates });
-      const ok  = (res.updateFeatureResults || []).filter((r) => !r.error).length;
+      const ok  = (res.updateFeatureResults || []).filter(r => !r.error).length;
       totalUpdated += ok;
 
-      const err = (res.updateFeatureResults || []).find((r) => r.error)?.error;
+      const err = (res.updateFeatureResults || []).find(r => r.error)?.error;
       if (err) {
         console.error("Zoekgebied update error:", err);
-        showToast(
-          `Fout bij bijwerken van Zoekgebied: ${err.message || "onbekende fout"}`,
-          "error",
-          4500
-        );
+        showToast(`Fout bij bijwerken van Zoekgebied: ${err.message || "onbekende fout"}`, "error", 4500);
       }
     }
 
     if (totalUpdated > 0) {
       showToast(`Zoekgebied bijgewerkt: ${totalUpdated} feature(s).`, "success");
     } else if (!hadTargets) {
+      // Don’t spam if user edited attributes that don’t change geometry, but still useful:
       showToast("Geen overlappende Zoekgebied‑features gevonden.", "info", 2500);
     }
-  };
+  }
 
-  // Wrap Laadpaal.applyEdits
+  // Wrap applyEdits to always propagate
   laadpaalLayer.applyEdits = async (edits) => {
+    // Snapshot intended targets BEFORE the call
+    const { oids: preOids, gids: preGids } = collectIdsFromEdits(edits);
+
     const res = await origApplyEdits(edits);
 
-    // Collect OIDs from add + update results
-    const changedOids = [
-      ...((res.addFeatureResults || []).map((r) => r.objectId).filter(Boolean)),
-      ...((res.updateFeatureResults || []).map((r) => r.objectId).filter(Boolean)),
-    ];
-    // Fire & forget propagation
+    // Prefer OIDs from the result, then fall back to the pre-call OIDs/GIDs
+    const postOids = collectOidsFromResult(res);
+    const changedOids = postOids.length ? postOids : preOids;
+
     Promise.resolve()
-      .then(() => propagateFromOids([...new Set(changedOids)]))
-      .catch((e) => console.error("Propagation error:", e));
+      .then(async () => {
+        const features = await fetchChangedLaadpaal(changedOids, preGids);
+        if (!features.length) {
+          console.debug("Propagation: no Laadpaal features resolved from edit; OIDs:", changedOids, "GIDs:", preGids);
+          return;
+        }
+        await propagateFromLaadpaalFeatures(features);
+      })
+      .catch(e => console.error("Propagation error:", e));
 
     return res;
   };
@@ -213,6 +268,7 @@ function hookPropagationOnApplyEdits(laadpaalLayer, zoekgebiedLayer) {
   laadpaalLayer.__propHookInstalled = true;
   console.debug("Propagation hook installed on Laadpaal.applyEdits");
 }
+
 
 async function startApp({ reinit = false } = {}) {
   if (appStarted && !reinit) return;
